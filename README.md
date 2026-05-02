@@ -1,69 +1,25 @@
-
-
-
-```Mermaid
-graph LR
-    subgraph Client_Side [客戶端 / 生產者]
-        A[Client] -- pool_submit --> B(Task A)
-        A -- pool_submit --> C(Task B)
-        A -- pool_submit --> D(Task C)
-    end
-
-    subgraph Synchronization_Layer [同步保護層]
-        E{Mutex Lock}
-    end
-
-    subgraph Queue_System [任務佇列 / 緩衝區]
-        F[Task Queue]
-    end
-
-    subgraph Pool_Internal [執行緒池 / 消費者]
-        G[Worker Thread 1]
-        H[Worker Thread 2]
-        I[Worker Thread 3]
-    end
-
-    B & C & D --> E
-    E --> F
-    F -- sem_wait喚醒 --> G
-    F -- sem_wait喚醒 --> H
-    F -- sem_wait喚醒 --> I
-
-    G -- execute --> J((Finish A))
-    H -- execute --> K((Finish B))
-    I -- execute --> L((Finish C))
-
-    style E fill:#f96,stroke:#333,stroke-width:2px
-    style F fill:#bbf,stroke:#333,stroke-width:2px
-    style G fill:#dfd,stroke:#333
-    style H fill:#dfd,stroke:#333
-    style I fill:#dfd,stroke:#333
-```
-```Mermaid
-sequenceDiagram
-    participant C as client.c (Main Thread)
-    participant Q as Task Queue (Global)
-    participant W as Worker Thread (Bee)
-
-    Note over C,W: pool_init()
-    C->>W: pthread_create()
-    W->>W: sem_wait() [進入休眠]
-
-    Note over C,W: pool_submit()
-    C->>Q: Mutex Lock
-    C->>Q: enqueue(task)
-    C->>Q: Mutex Unlock
-    C->>W: sem_post() [喚醒]
-
-    Note over W: Worker Logic
-    W->>Q: Mutex Lock
-    W->>Q: dequeue()
-    W->>Q: Mutex Unlock
-    W->>W: execute(function, data)
-```
-# Ch7 Designing a Thread Pool
+# Designing a Thread Pool(posix-thread-pool)
 
 ## 1. Project Overview
+### Goal
+- Implement a Thread Pool in C using the Pthreads API to efficiently manage and execute asynchronous tasks.
+
+### Core Architecture
+*   The system uses a **Producer-Consumer** model:
+    *   **Producer (Client)**: Submits tasks to a shared queue.
+    *   **Consumer (Worker Threads)**: 3 pre-created threads that wait for work and execute tasks.
+    *   **Buffer**: A circular task queue with a fixed capacity of 10
+
+### Synchronization Mechanism
+*   **Mutex**: Protects the shared queue from simultaneous access (Race Conditions).
+*   **Semaphore**: Notifies idle threads when a new task is added (avoids Busy Waiting)
+
+### Key API Functions
+*   **`pool_init()`**: Sets up locks, semaphores, and starts worker threads.
+*   **`pool_submit()`**: Adds a task to the queue and signals a worker.
+*   **`worker()`**: The main loop for threads to wait, fetch, and run task.
+*   **`pool_shutdown()`**: Cancels all threads and cleans up resources.
+
 ## 2. Team Members and Responsibility
 - Chen, Ban-Ban (陳半半): Architect the threads lifecycle => Part A
 - Kuan, Chin-Wei (官京緯): To be defined.
@@ -101,17 +57,82 @@ sequenceDiagram
     *   **Dequeue**: Remove task from `queue[head]`, update `head`, and decrement `count`.
 ---
 
+## Flow diagram
+```mermaid
+graph LR
+    subgraph Client_Side [Client / Producer]
+        A[Client Program] -- pool_submit --> B(Task Object)
+    end
+
+    subgraph Sync_Layer [Synchronization & Notification]
+        E{Mutex Lock}
+        S((Semaphore))
+    end
+
+    subgraph Queue_System [Work Queue / Buffer]
+        F[Circular Task Buffer]
+    end
+
+    subgraph Pool_Internal [Thread Pool / Consumers]
+        G[Worker Thread 1]
+        H[Worker Thread 2]
+        I[Worker Thread 3]
+    end
+
+    B --> E
+    E --> F
+    F -.-> S
+    S -- sem_wait wakes up --> G
+    S -- sem_wait wakes up --> H
+    S -- sem_wait wakes up --> I
+
+    G & H & I -- dequeue --> F
+    G & H & I -- execute --> J((Task Completed))
+
+    style E fill:#f96,stroke:#333
+    style S fill:#ff9,stroke:#333
+    style F fill:#bbf,stroke:#333
+```
+## Sequence diagram
+```mermaid
+sequenceDiagram
+    participant C as client.c (Main Thread)
+    participant Q as Task Queue (Global)
+    participant W as Worker Thread (Bee)
+
+    Note over C,W: pool_init()
+    C->>W: pthread_create()
+    
+    loop Worker Lifecycle
+        W->>W: sem_wait() [Sleep if queue empty]
+        W->>Q: pthread_mutex_lock()
+        W->>Q: dequeue()
+        W->>Q: pthread_mutex_unlock()
+        W->>W: execute(function, data)
+    end
+
+    Note over C,Q: pool_submit()
+    C->>Q: pthread_mutex_lock()
+    C->>Q: enqueue(task)
+    C->>Q: pthread_mutex_unlock()
+    C->>W: sem_post() [Signal available work]
+
+    Note over C,W: pool_shutdown()
+    C->>W: pthread_cancel()
+    C->>W: pthread_join() [Resource Cleanup]
+```
 
 ## 4. Compilation and Configuration Instructions
 ### Environment
+* **Tested on**: Ubuntu 20.04 (WSL2)
+* **Requirements**: `gcc`
+* **Library**: POSIX Pthreads (-lpthread)
 
 ### Compile the program
 **Compile**: Use the `Makefile`.
     ```bash
     make
     ```
-
-
 ### Run the Program
 **Run**: Execute the generated `example` file.
     ```bash
@@ -126,10 +147,10 @@ sequenceDiagram
 
 
 ## 6. File Structure
-*   **`threadpool.h`**: Header file containing function prototypes and definitions.
-*   **`threadpool.c`**: The core implementation of the thread pool logic.
-*   **`client.c`**: The example client program used for testing the thread pool.
-*   **`Makefile`**: The script used for automated compilation of the project.
+*   **`threadpool.h`**: Function prototypes.
+*   **`threadpool.c`**: Core pool logic and synchronization.
+*   **`client.c`**: Test program to verify the pool.
+*   **`Makefile`**: Automated build script.
 
 
 Author: Kuan, Chin-Wei (官京緯), Chen, Ban-Ban (陳半半), Zheng, Nai-Zhen(鄭乃甄)
